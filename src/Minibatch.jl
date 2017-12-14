@@ -1,6 +1,6 @@
 module Minibatch
 
-using Cassette
+#using Cassette
 
 ## questions for Jarrett:
 # 1. it seems like the mechanism for forcing the main overdubbing @generated to recompile at each world age update is broken
@@ -19,37 +19,66 @@ function softmax(x, axis=1)
     return out
 end
 
+################
+# DLArray type #
+################
+
+# what is the minimum set of methods we need to forward? do we eventually want
+# to switch to Cassette-style overdubbing rather than a true type wrapper here?
+
+struct DLArray{T, E, N, B} <: AbstractArray{E, N}
+    data::T
+end
+DLArray(x::T, varlen::NTuple{N, Bool}) where T <: AbstractArray{E, N} where {E, N} = DLArray{T, E, N, varlen}(x)
+
+Base.ndims(x::DLArray{T, E, N, B}) where {T, E, N, B} = N
+Base.size(x::DLArray) = size(x.data)
+Base.getindex(x::DLArray, ind...) = getindex(x.data, ind...)
+
 ###############
 # Batch types #
 ###############
-
-# eventually we want a flexible array wrapper type that lets us designate one
-# axis as the batch axis and a subset of other axes as spatial/temporal (that
-# is, potentially variable).
 
 abstract type AbstractBatch{T} end
 
 struct VectorBatch{T} <: AbstractBatch{T}
     data::Vector{T}
 end
-VectorBatch(data) = VectorBatch{typeof(first(data))}(data)
+VectorBatch(data::Vector{T}) where T <: DLArray = VectorBatch{T}(data)
 
-struct PadBatch{T} <: AbstractBatch{T}
-    data # TODO check that perf is ok
+Base.length(b::VectorBatch) = length(b.data)
+
+struct SizedBatch{T, N} <: AbstractBatch{T}
+    data
+    sizes::Matrix{Int}
+end
+function SizedBatch(data::Vector{T}) where T <: DLArray{T2, E, N, B} where {T2, E, N, B}
+    dims = tuple((b ? maximum(size(v, d) for v in data)
+                    : size(first(data), d) for (d, b) in enumerate(B))...,
+                 length(data))
+    batch = fill!(similar(first(data), dims), 0)
+    sizes = zeros(Int, N, length(data))
+    for (i, example) in enumerate(data)
+        setindex!(batch, example, indices(example)..., i)
+        sizes[:, i] = collect(size(example))
+    end
+    return SizedBatch{T, N}(batch, sizes)
+end
+
+Base.length(b::SizedBatch) = last(size(b.data))
+
+struct MaskedBatch{T} <: AbstractBatch{T}
+    data
     mask
 end
-function PadBatch(data::Array{E, N}, mask::Array{E, N}) where {E, N} = PadBatch{Array{E, N - 1}}(data, mask) # TODO generalize this
 
 # also (at least) CatBatch using CatArrays.jl
-
-length(b::VectorBatch) = length(b.data)
-length(b::PadBatch) = last(size(b.data))
 
 #####################
 # Cassette overdubs #
 #####################
 
-Cassette.@context Ctx
+#Cassette.@context Ctx
 # function mypass(signature, body)
 #     Core.println("&&&&&&&&&")
 #     Core.println(body)
@@ -81,7 +110,7 @@ Base.broadcast(f, x::T,           y::PadBatch{T}) where T = PadBatch{T}(broadcas
 
 #Cassette.@isprimitive Ctx (::typeof(btanh))(x::PadBatch) = @show btanh(x.data)
 
-softmax(x::PadBatch{T}, axis) where T = PadBatch{T}(softmax(x.data, axis), x.mask) # TODO NO BAD WRONG
+# softmax(x::PadBatch{T}, axis) where T = ...
 
 ################
 # Test network #
