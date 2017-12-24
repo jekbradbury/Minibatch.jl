@@ -1,4 +1,4 @@
-module Minibatch
+#module Minibatch
 
 #using Cassette
 
@@ -13,7 +13,7 @@ module Minibatch
 # NN functions #
 ################
 
-function softmax(x, axis=1)
+function softmax(x::AbstractArray, axis=1)
     out = exp.(x .- maximum(x, axis))
     out ./= sum(out, axis)
     return out
@@ -29,11 +29,19 @@ end
 struct DLArray{T, E, N, B} <: AbstractArray{E, N}
     data::T
 end
-DLArray(x::T, varlen::NTuple{N, Bool}) where T <: AbstractArray{E, N} where {E, N} = DLArray{T, E, N, varlen}(x)
+DLArray(x::T, varlen::NTuple{N, Bool}) where T<:AbstractArray{E, N} where {E, N} = DLArray{T, E, N, varlen}(x)
 
+function (f::Union{Type{Base.size}, Type{Base.getindex}})(xs::Vararg{Union{T, AbstractArray}}) where T<:DLArray
+    T(f((x isa T ? x.data : x for x in xs)...))
+end
+function Base.broadcast(f, xs::Vararg{Union{T, AbstractArray}}) where T<:DLArray
+    T(broadcast(f, (x isa T ? x.data : x for x in xs)...))
+end
 Base.ndims(x::DLArray{T, E, N, B}) where {T, E, N, B} = N
-Base.size(x::DLArray) = size(x.data)
-Base.getindex(x::DLArray, ind...) = getindex(x.data, ind...)
+# Base.size(x::DLArray) = size(x.data)
+# Base.getindex(x::DLArray, ind...) = getindex(x.data, ind...)
+# Base.broadcast(f, x::DLArray) = broadcast(f, x.data)
+# Base.broadcast(f, x::DLArray, y::DLArray) = broadcast(f, x.data, y.data)
 
 ###############
 # Batch types #
@@ -44,7 +52,7 @@ abstract type AbstractBatch{T} end
 struct VectorBatch{T} <: AbstractBatch{T}
     data::Vector{T}
 end
-VectorBatch(data::Vector{T}) where T <: DLArray = VectorBatch{T}(data)
+VectorBatch(data::Vector{T}) where T<:DLArray = VectorBatch{T}(data)
 
 Base.length(b::VectorBatch) = length(b.data)
 
@@ -52,7 +60,7 @@ struct SizedBatch{T, N} <: AbstractBatch{T}
     data
     sizes::Matrix{Int}
 end
-function SizedBatch(data::Vector{T}) where T <: DLArray{T2, E, N, B} where {T2, E, N, B}
+function SizedBatch(data::Vector{T}) where T<:DLArray{T2, E, N, B} where {T2, E, N, B}
     dims = tuple((b ? maximum(size(v, d) for v in data)
                     : size(first(data), d) for (d, b) in enumerate(B))...,
                  length(data))
@@ -64,8 +72,10 @@ function SizedBatch(data::Vector{T}) where T <: DLArray{T2, E, N, B} where {T2, 
     end
     return SizedBatch{T, N}(batch, sizes)
 end
+SizedBatch(b::VectorBatch) = SizedBatch(b.data)
 
 Base.length(b::SizedBatch) = last(size(b.data))
+Base.:(==)(a::SizedBatch, b::SizedBatch) = a.data == b.data && a.sizes == b.sizes
 
 struct MaskedBatch{T} <: AbstractBatch{T}
     data
@@ -74,51 +84,59 @@ end
 
 # also (at least) CatBatch using CatArrays.jl
 
-#####################
-# Cassette overdubs #
-#####################
+####################################
+# Methods/overdubs for batch types #
+####################################
 
-#Cassette.@context Ctx
-# function mypass(signature, body)
-#     Core.println("&&&&&&&&&")
-#     Core.println(body)
-#     body
-# end
-# Cassette.getpass(::Type{Ctx{T}}, Void) where T = mypass
-#
-# display(methods(Cassette.getpass))
-
-#Cassette.@isprimitive Ctx (::typeof(*))(W::T, x::PadBatch{T}) where T = @show W * x
-Base.:*(W, x::PadBatch{T}) where T = PadBatch{T}(W * x.data, x.mask)
-function Base.:*(x::PadBatch{S}, y::PadBatch{T}) where {S, T}
-
+function (f::Union{Type{Base.:+}, Type{Base.:*}, Type{Base.broadcast}})(xs::Vararg{Union{T, AbstractArray, Function}}) where T<:VectorBatch
+    sizes = [length(x) for x in xs if x isa T]
+    batchsize = first(sizes)
+    all(s == batchsize for s in sizes) || error("VectorBatch size mismatch in broadcast")
+    T([f((x isa T ? x.data[i] : x for x in xs)...) for i in 1:batchsize])
+end
+function (f::Type{Base.:+})(xs::Vararg{Union{T, AbstractArray, Function}}) where T<:VectorBatch
+    sizes = [length(x) for x in xs if x isa T]
+    batchsize = first(sizes)
+    all(s == batchsize for s in sizes) || error("VectorBatch size mismatch in broadcast")
+    T([f((x isa T ? x.data[i] : x for x in xs)...) for i in 1:batchsize])
 end
 
-#Cassette.@isprimitive Ctx (::typeof(+))(x::PadBatch{T}, b::T) where T = @show x .+ b
-Base.broadcast(f, x::PadBatch{T}) where T = PadBatch{T}(broadcast(f, x.data), x.mask)
+#(f)(x::VectorBatch) = VectorBatch(map(f, x.data))
 
-Base.broadcast(f, x::PadBatch{T}, y::T)           where T = PadBatch{T}(broadcast(f, x.data, y), x.mask)
-Base.broadcast(f, x::T,           y::PadBatch{T}) where T = PadBatch{T}(broadcast(f, x, y.data), y.mask)
-#Base.broadcast(f, x::PadBatch{T}, y::PadBatch{T}, z::PadBatch{T}) where T = PadBatch{T}(broadcast(f, x.data, y.data, z.data))
-#Base.broadcast(f, x::PadBatch{T}, y::PadBatch{T}, z::T)           where T = PadBatch{T}(broadcast(f, x.data, y.data, z))
-#Base.broadcast(f, x::PadBatch{T}, y::T,           z::PadBatch{T}) where T = PadBatch{T}(broadcast(f, x.data, y, z.data))
-#Base.broadcast(f, x::PadBatch{T}, y::T,           z::T)           where T = PadBatch{T}(broadcast(f, x.data, y, z))
-#Base.broadcast(f, x::T,           y::PadBatch{T}, z::PadBatch{T}) where T = PadBatch{T}(broadcast(f, x, y.data, z.data))
-#Base.broadcast(f, x::T,           y::PadBatch{T}, z::T)           where T = PadBatch{T}(broadcast(f, x, y.data, z))
-#Base.broadcast(f, x::T,           y::T,           z::PadBatch{T}) where T = PadBatch{T}(broadcast(f, x, y, z.data))
-# TODO figure out how the Cassette contextual dispatch thing works here
+#Base.broadcast(f, x::T) where T<:SizedBatch = T(broadcast(f, x.data), x.sizes)
+# function Base.broadcast(f, x::T, y::T) where T<:SizedBatch
+#     x.sizes == y.sizes || error("binary broadcast: SizedBatch size mismatch")
+#     T(broadcast(f, x.data, y.data), x.sizes)
+# end
+# function Base.broadcast(f, x::T, y::AbstractArray) where T<:SizedBatch
+#     T(broadcast(f, x.data, y), x.sizes)
+# end
+function Base.broadcast(f, xs::Vararg{Union{T, AbstractArray}}) where T<:SizedBatch
+    sizes = [x.sizes for x in xs if x isa T]
+    all(s == first(sizes) for s in sizes) || error("SizedBatch size mismatch in broadcast")
+    T(broadcast(f, (x isa T ? x.data : x for x in xs)...))
+end
 
-#Cassette.@isprimitive Ctx (::typeof(btanh))(x::PadBatch) = @show btanh(x.data)
-
-# softmax(x::PadBatch{T}, axis) where T = ...
-
-################
-# Test network #
-################
+#################
+# Test networks #
+#################
 
 W = rand(5, 5)
 b = rand(5)
-f(x) = tanh.(W*x .+ b)
+f(x) = tanh.(x)
+g(x) = tanh.(x .+ b)
+h(x) = tanh.(W*x .+ b)
+
+data(n) = DLArray(rand(5, n), (false,true))
+x1 = VectorBatch([data(3), data(4)])
+x2 = SizedBatch(x1)
+
+# println()
+# display(x1)
+# display(f(x1))
+# println()
+# display(x2)
+# display(f(x2))
 
 # function attention(q, k, v) # q::N×D, k::M×D, v::M×D
 #     alpha = q*k' # ::N×M
@@ -133,12 +151,12 @@ function attention(q, k, v) # q::D×N, k::D×M, v::D×M
 end
 
 #f(x::AbstractBatch) = Cassette.@execute Ctx f(x);
-x = rand(5)
-xb = PadBatch(rand(5, 3))
-display(f(x))
-println()
-display(f(xb))
-println()
+# x = rand(5)
+# xb = PadBatch(rand(5, 3))
+# display(f(x))
+# println()
+# display(f(xb))
+# println()
 
 
-end # module
+#end # module
