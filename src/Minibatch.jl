@@ -1,5 +1,7 @@
 module Minibatch
 
+export VectorBatch, SizedBatch, softmax
+
 ################
 # NN functions #
 ################
@@ -90,6 +92,7 @@ end
 function Base.broadcast(f, xs::Vararg{Union{T, AbstractArray}}) where T<:SizedBatch
     sizes = _checksizes((x for x in xs if x isa T)...)
     T(broadcast(f, (x isa T ? x.data : x for x in xs)...), sizes)
+    # TODO BUG re-zero padding unless f is known zero-preserving
 end
 Base.:+(xs::Vararg{Union{T, AbstractArray}}) where T<:SizedBatch = broadcast(+, xs...)
 Base.:-(xs::Vararg{Union{T, AbstractArray}}) where T<:SizedBatch = broadcast(-, xs...)
@@ -144,48 +147,5 @@ end
 # Base.:*(a::SizedBatch{T, A}, b::SizedBatch{T, B}) where {T<:AbstractMatrix, A, B}
 # Base.:*(a::SizedBatch{T1, A}, b::SizedBatch{T2, B}) where {T1<:AbstractMatrix, T2<:AbstractVector, A, B}
 # Base.:*(a::SizedBatch{T1, A}, b::SizedBatch{T2, B}) where {T1<:AbstractVector, T2<:AbstractMatrix, A, B}
-
-#################
-# Test networks #
-#################
-
-W = rand(5, 5)
-b = rand(5)
-f(x) = tanh.(x)
-g(x) = tanh.(x .+ b)
-h(x) = tanh.(W*x .+ b)
-
-axisinfo = (false, true)
-data(n) = rand(5, n)
-x1 = VectorBatch([data(3), data(4)], axisinfo)
-x2 = SizedBatch(x1)
-
-# println()
-# display(x1)
-# display(f(x1))
-# println()
-# display(x2)
-# display(f(x2))
-
-# function attention(q, k, v) # q::N×D, k::M×D, v::M×D
-#     alpha = q*k' # ::N×M
-#     # TODO tri mask
-#     softmax(alpha, 2)*v # ::N×D
-# end
-
-function attention(q, k, v) # q::D×N, k::D×M, v::D×M
-    alpha = k'*q # ::M×N
-    # TODO tri mask
-    v*softmax(alpha, 1) # ::D×N
-end
-
-#f(x::AbstractBatch) = Cassette.@execute Ctx f(x);
-# x = rand(5)
-# xb = PadBatch(rand(5, 3))
-# display(f(x))
-# println()
-# display(f(xb))
-# println()
-
 
 end # module
