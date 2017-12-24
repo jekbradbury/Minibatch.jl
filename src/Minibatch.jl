@@ -1,13 +1,4 @@
-#module Minibatch
-
-#using Cassette
-
-## questions for Jarrett:
-# 1. it seems like the mechanism for forcing the main overdubbing @generated to recompile at each world age update is broken
-# 2. why does `replace_match!` only recurse if it doesn't match?
-# 3. what exactly is the difference between writing a macro like DataFlow and writing a Cassette pass?
-# 4. related: is there a way now to write something kind of like a DataFlow pass but that uses type info?
-# 5. specifically, I think I can use Cassette's built-in passes to rewrite `:call`s but I also want to rewrite control flow in a similarly type-sensitive way
+module Minibatch
 
 ################
 # NN functions #
@@ -19,50 +10,35 @@ function softmax(x::AbstractArray, axis=1)
     return out
 end
 
-################
-# DLArray type #
-################
+#################
+# AxisInfo type #
+#################
 
-# what is the minimum set of methods we need to forward? do we eventually want
-# to switch to Cassette-style overdubbing rather than a true type wrapper here?
-
-struct DLArray{T, E, N, B} <: AbstractArray{E, N}
-    data::T
-end
-DLArray(x::T, varlen::NTuple{N, Bool}) where T<:AbstractArray{E, N} where {E, N} = DLArray{T, E, N, varlen}(x)
-
-function (f::Union{Type{Base.size}, Type{Base.getindex}})(xs::Vararg{Union{T, AbstractArray}}) where T<:DLArray
-    T(f((x isa T ? x.data : x for x in xs)...))
-end
-function Base.broadcast(f, xs::Vararg{Union{T, AbstractArray}}) where T<:DLArray
-    T(broadcast(f, (x isa T ? x.data : x for x in xs)...))
-end
-Base.ndims(x::DLArray{T, E, N, B}) where {T, E, N, B} = N
-# Base.size(x::DLArray) = size(x.data)
-# Base.getindex(x::DLArray, ind...) = getindex(x.data, ind...)
-# Base.broadcast(f, x::DLArray) = broadcast(f, x.data)
-# Base.broadcast(f, x::DLArray, y::DLArray) = broadcast(f, x.data, y.data)
+# TODO non-varlen axes should have (optional?) static dimension
+const AxisInfo{N} = NTuple{N, Bool}
 
 ###############
 # Batch types #
 ###############
 
-abstract type AbstractBatch{T} end
+# currently it's intentionally not <:AbstractArray
+# because that provides a lot of magic I want to avoid
+abstract type AbstractBatch{T, A} end
 
-struct VectorBatch{T} <: AbstractBatch{T}
+struct VectorBatch{T, A} <: AbstractBatch{T, A}
     data::Vector{T}
 end
-VectorBatch(data::Vector{T}) where T<:DLArray = VectorBatch{T}(data)
+VectorBatch(data::Vector{T}, axes::AxisInfo) where {T} = VectorBatch{T, axes}(data)
 
 Base.length(b::VectorBatch) = length(b.data)
 
-struct SizedBatch{T, N} <: AbstractBatch{T}
+struct SizedBatch{T, A} <: AbstractBatch{T, A}
     data
     sizes::Matrix{Int}
 end
-function SizedBatch(data::Vector{T}) where T<:DLArray{T2, E, N, B} where {T2, E, N, B}
+function SizedBatch(data::Vector{T}, axes::AxisInfo{N}) where {T, N}
     dims = tuple((b ? maximum(size(v, d) for v in data)
-                    : size(first(data), d) for (d, b) in enumerate(B))...,
+                    : size(first(data), d) for (d, b) in enumerate(axes))...,
                  length(data))
     batch = fill!(similar(first(data), dims), 0)
     sizes = zeros(Int, N, length(data))
@@ -70,52 +46,104 @@ function SizedBatch(data::Vector{T}) where T<:DLArray{T2, E, N, B} where {T2, E,
         setindex!(batch, example, indices(example)..., i)
         sizes[:, i] = collect(size(example))
     end
-    return SizedBatch{T, N}(batch, sizes)
+    return SizedBatch{T, axes}(batch, sizes)
 end
-SizedBatch(b::VectorBatch) = SizedBatch(b.data)
+SizedBatch(b::VectorBatch{T, A}) where {T, A} = SizedBatch(b.data, A)
 
+# TODO make batch size a part of the type when we have static dims
 Base.length(b::SizedBatch) = last(size(b.data))
 Base.:(==)(a::SizedBatch, b::SizedBatch) = a.data == b.data && a.sizes == b.sizes
 
-struct MaskedBatch{T} <: AbstractBatch{T}
+# TODO
+struct MaskedBatch{T, A} <: AbstractBatch{T, A}
     data
     mask
 end
 
-# also (at least) CatBatch using CatArrays.jl
+# TODO also CatBatch using CatArrays.jl?
 
 ####################################
 # Methods/overdubs for batch types #
 ####################################
 
-function (f::Union{Type{Base.:+}, Type{Base.:*}, Type{Base.broadcast}})(xs::Vararg{Union{T, AbstractArray, Function}}) where T<:VectorBatch
-    sizes = [length(x) for x in xs if x isa T]
-    batchsize = first(sizes)
-    all(s == batchsize for s in sizes) || error("VectorBatch size mismatch in broadcast")
+function _checkbatchsizes(xs::Vararg{AbstractBatch})
+    bs = length(first(xs))
+    all(length(x) == bs for x in xs) || error("batch size mismatch")
+    bs
+end
+function _vbcall(f, T, xs...)
+    batchsize = _checkbatchsizes((x for x in xs if x isa T)...)
     T([f((x isa T ? x.data[i] : x for x in xs)...) for i in 1:batchsize])
 end
-function (f::Type{Base.:+})(xs::Vararg{Union{T, AbstractArray, Function}}) where T<:VectorBatch
-    sizes = [length(x) for x in xs if x isa T]
-    batchsize = first(sizes)
-    all(s == batchsize for s in sizes) || error("VectorBatch size mismatch in broadcast")
-    T([f((x isa T ? x.data[i] : x for x in xs)...) for i in 1:batchsize])
+Base.:+(xs::Vararg{Union{T, AbstractArray}}) where T<:VectorBatch = _vbcall(+, T, xs...)
+Base.:-(xs::Vararg{Union{T, AbstractArray}}) where T<:VectorBatch = _vbcall(-, T, xs...)
+Base.:*(xs::Vararg{Union{T, AbstractArray}}) where T<:VectorBatch = _vbcall(*, T, xs...)
+Base.:/(xs::Vararg{Union{T, AbstractArray}}) where T<:VectorBatch = _vbcall(/, T, xs...)
+Base.getindex(x::T, inds...) where T<:VectorBatch = _vbcall(getindex, T, x, inds...)
+Base.broadcast(f, xs::Vararg{Union{T, AbstractArray}}) where T<:VectorBatch = _vbcall(broadcast, T, f, xs...)
+
+function _checksizes(xs::Vararg{SizedBatch})
+    fs = first(xs).sizes
+    all(x.sizes == fs for x in xs) || error("SizedBatch size mismatch")
+    fs
 end
-
-#(f)(x::VectorBatch) = VectorBatch(map(f, x.data))
-
-#Base.broadcast(f, x::T) where T<:SizedBatch = T(broadcast(f, x.data), x.sizes)
-# function Base.broadcast(f, x::T, y::T) where T<:SizedBatch
-#     x.sizes == y.sizes || error("binary broadcast: SizedBatch size mismatch")
-#     T(broadcast(f, x.data, y.data), x.sizes)
-# end
-# function Base.broadcast(f, x::T, y::AbstractArray) where T<:SizedBatch
-#     T(broadcast(f, x.data, y), x.sizes)
-# end
 function Base.broadcast(f, xs::Vararg{Union{T, AbstractArray}}) where T<:SizedBatch
-    sizes = [x.sizes for x in xs if x isa T]
-    all(s == first(sizes) for s in sizes) || error("SizedBatch size mismatch in broadcast")
-    T(broadcast(f, (x isa T ? x.data : x for x in xs)...))
+    sizes = _checksizes((x for x in xs if x isa T)...)
+    T(broadcast(f, (x isa T ? x.data : x for x in xs)...), sizes)
 end
+Base.:+(xs::Vararg{Union{T, AbstractArray}}) where T<:SizedBatch = broadcast(+, xs...)
+Base.:-(xs::Vararg{Union{T, AbstractArray}}) where T<:SizedBatch = broadcast(-, xs...)
+
+function Base.dot(a::SizedBatch{T, A}, b::SizedBatch{T, B}) where {T<:AbstractVector, A, B}
+    batchsize = last(size(_checksizes(a, b)))
+    data = sum(a.data .* b.data, 1)[1, :] # TODO dotBatched?
+    SizedBatch{T, ()}(data, Matrix{Int}(0, batchsize))
+end
+function Base.dot(a::AbstractVector, b::SizedBatch{T, (false,)}) where {T}
+    SizedBatch{T, ()}(b.data'*a, Matrix{Int}(0, length(b)))
+end
+function Base.dot(a::SizedBatch{T, (false,)}, b::AbstractVector) where {T}
+    SizedBatch{T, ()}(a.data'*b, Matrix{Int}(0, length(a)))
+end
+
+function Base.:*(a::AbstractMatrix, b::SizedBatch{T, (false,)}) where {T}
+    s1, bs = size(b.data)
+    data = reshape(a * reshape(b.data, s1*bs), size(a, 1), bs)
+    sizes = fill(similar(b.sizes), size(a, 1))
+    SizedBatch{T, (false,)}(data, sizes)
+end
+function Base.:*(a::SizedBatch{T, A}, b::AbstractVector) where {T<:AbstractMatrix, A}
+    A[2] == false || error("cannot contract axes with static and dynamic dimension")
+    s1, s2, bs = size(a.data)
+    data = reshape(reshape(a.data, s1, s2*bs) * b, s1, bs)
+    SizedBatch{T, A}(data, b.sizes[1:1, :])
+end
+
+function Base.:*(a::AbstractMatrix, b::SizedBatch{T, (false,)}) where {T}
+    sizes = fill(similar(b.sizes), size(a, 1))
+    SizedBatch{T, (false,)}(a * b.data, sizes)
+end
+function Base.:*(a::AbstractMatrix, b::SizedBatch{T, B}) where {T<:AbstractMatrix, B}
+    B[1] == false || error("cannot contract axes with static and dynamic dimension")
+    s1, s2, bs = size(b.data)
+    data = reshape(a * reshape(b.data, s1, s2*bs), size(a, 1), s2, bs)
+    sizes = deepcopy(b.sizes)
+    sizes[1, :] .= size(a, 1)
+    SizedBatch{T, B}(data, sizes)
+end
+function Base.:*(a::SizedBatch{T, A}, b::AbstractMatrix) where {T<:AbstractMatrix, A}
+    A[2] == false || error("cannot contract axes with static and dynamic dimension")
+    s1, s2, bs = size(a.data)
+    data = reshape(reshape(a.data, s1, s2*bs) * b, s1, size(b, 2), bs)
+    sizes = deepcopy(b.sizes)
+    sizes[2, :] .= size(b, 2)
+    SizedBatch{T, A}(data, sizes)
+end
+
+# these require gemmBatched/gemm_batched:
+# Base.:*(a::SizedBatch{T, A}, b::SizedBatch{T, B}) where {T<:AbstractMatrix, A, B}
+# Base.:*(a::SizedBatch{T1, A}, b::SizedBatch{T2, B}) where {T1<:AbstractMatrix, T2<:AbstractVector, A, B}
+# Base.:*(a::SizedBatch{T1, A}, b::SizedBatch{T2, B}) where {T1<:AbstractVector, T2<:AbstractMatrix, A, B}
 
 #################
 # Test networks #
@@ -127,8 +155,9 @@ f(x) = tanh.(x)
 g(x) = tanh.(x .+ b)
 h(x) = tanh.(W*x .+ b)
 
-data(n) = DLArray(rand(5, n), (false,true))
-x1 = VectorBatch([data(3), data(4)])
+axisinfo = (false, true)
+data(n) = rand(5, n)
+x1 = VectorBatch([data(3), data(4)], axisinfo)
 x2 = SizedBatch(x1)
 
 # println()
@@ -159,4 +188,4 @@ end
 # println()
 
 
-#end # module
+end # module
