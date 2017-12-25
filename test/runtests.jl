@@ -13,17 +13,20 @@ h(x) = tanh.(W*x .+ b)
 
 axisinfo = (false, true)
 data(n) = rand(5, n)
-x1 = VectorBatch([data(3), data(4)], axisinfo)
-x2 = SizedBatch(x1)
+xs = [data(3), data(4)]
+x1 = VectorBatch(xs, axisinfo)
+x2 = SizedBatch(xs, axisinfo)
+x3 = MaskedBatch(xs, axisinfo)
 
-display(f(x1))
-display(f(x2))
-println()
-display(g(x1))
-display(g(x2))
-println()
-display(h(x1))
-display(h(x2))
+for other in (x1, x2, x3)
+    @test x1 == VectorBatch(other)
+    @test x2 == SizedBatch(other)
+    @test x3 == MaskedBatch(other)
+end
+
+for fn in (f, g, h)
+    @test SizedBatch(fn(x1)) == fn(x2)
+end
 
 # function attention(q, k, v) # q::N×D, k::M×D, v::M×D
 #     alpha = q*k' # ::N×M
@@ -34,5 +37,5 @@ display(h(x2))
 function attention(q, k, v) # q::D×N, k::D×M, v::D×M
     alpha = k'*q # ::M×N
     # TODO tri mask
-    v*softmax(alpha, 1) # ::D×N
+    return v*softmax(alpha, 1) # ::D×N
 end

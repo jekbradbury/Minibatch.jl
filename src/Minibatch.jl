@@ -1,6 +1,6 @@
 module Minibatch
 
-export VectorBatch, SizedBatch, softmax
+export VectorBatch, SizedBatch, MaskedBatch, softmax
 
 ################
 # NN functions #
@@ -33,6 +33,7 @@ end
 VectorBatch(data::Vector{T}, axes::AxisInfo) where {T} = VectorBatch{T, axes}(data)
 
 Base.length(b::VectorBatch) = length(b.data)
+Base.:(==)(a::VectorBatch{T1, A}, b::VectorBatch{T2, A}) where {T1, T2, A} = a.data == b.data
 
 struct SizedBatch{T, A} <: AbstractBatch{T, A}
     data
@@ -50,17 +51,39 @@ function SizedBatch(data::Vector{T}, axes::AxisInfo{N}) where {T, N}
     end
     return SizedBatch{T, axes}(batch, sizes)
 end
-SizedBatch(b::VectorBatch{T, A}) where {T, A} = SizedBatch(b.data, A)
 
 # TODO make batch size a part of the type when we have static dims
-Base.length(b::SizedBatch) = last(size(b.data))
-Base.:(==)(a::SizedBatch, b::SizedBatch) = a.data == b.data && a.sizes == b.sizes
+Base.length(b::SizedBatch) = last(size(b.sizes))
+Base.:(==)(a::SizedBatch{T1, A}, b::SizedBatch{T2, A}) where {T1, T2, A} = a.data == b.data && a.sizes == b.sizes
 
-# TODO
+SizedBatch(b::VectorBatch{T, A}) where {T, A} = SizedBatch(b.data, A)
+function VectorBatch(b::SizedBatch{T, A}) where {T, A}
+    bs = last(size(b.sizes))
+    xs = [b.data[(1:n for n in b.sizes[:, i])..., i] for i in 1:bs]
+    return VectorBatch{T, A}(xs)
+end
+
 struct MaskedBatch{T, A} <: AbstractBatch{T, A}
     data
     mask
+    sizes::Matrix{Int}
 end
+function MaskedBatch(b::SizedBatch{T, A}) where {T, A}
+    dims = tuple((a ? size(b.data, d) : 1 for (d, a) in enumerate(A))...,
+                 last(size(b.sizes)))
+    mask = fill!(similar(b.data, dims), 0)
+    for i in 1:last(size(b.sizes))
+        mask[(1:(A[d] ? n : 1) for (d, n) in enumerate(b.sizes[:, i]))..., i] .= 1
+    end
+    return MaskedBatch{T, A}(b.data, mask, b.sizes)
+end
+SizedBatch(b::MaskedBatch{T, A}) where {T, A} = SizedBatch{T, A}(b.data, b.sizes)
+MaskedBatch(data::Vector, axes::AxisInfo) = MaskedBatch(SizedBatch(data, axes))
+MaskedBatch(b::VectorBatch) = MaskedBatch(SizedBatch(b))
+VectorBatch(b::MaskedBatch) = VectorBatch(SizedBatch(b))
+
+Base.length(b::MaskedBatch) = last(size(b.sizes))
+Base.:(==)(a::MaskedBatch{T1, A}, b::MaskedBatch{T2, A}) where {T1, T2, A} = a.data == b.data && a.sizes == b.sizes
 
 # TODO also CatBatch using CatArrays.jl?
 
@@ -71,11 +94,11 @@ end
 function _checkbatchsizes(xs::Vararg{AbstractBatch})
     bs = length(first(xs))
     all(length(x) == bs for x in xs) || error("batch size mismatch")
-    bs
+    return bs
 end
 function _vbcall(f, T, xs...)
     batchsize = _checkbatchsizes((x for x in xs if x isa T)...)
-    T([f((x isa T ? x.data[i] : x for x in xs)...) for i in 1:batchsize])
+    return T([f((x isa T ? x.data[i] : x for x in xs)...) for i in 1:batchsize])
 end
 Base.:+(xs::Vararg{Union{T, AbstractArray}}) where T<:VectorBatch = _vbcall(+, T, xs...)
 Base.:-(xs::Vararg{Union{T, AbstractArray}}) where T<:VectorBatch = _vbcall(-, T, xs...)
@@ -84,15 +107,25 @@ Base.:/(xs::Vararg{Union{T, AbstractArray}}) where T<:VectorBatch = _vbcall(/, T
 Base.getindex(x::T, inds...) where T<:VectorBatch = _vbcall(getindex, T, x, inds...)
 Base.broadcast(f, xs::Vararg{Union{T, AbstractArray}}) where T<:VectorBatch = _vbcall(broadcast, T, f, xs...)
 
+function _rezero!(b::SizedBatch)
+    b = MaskedBatch(b)
+    b.data .*= b.mask
+    return SizedBatch(b)
+end
 function _checksizes(xs::Vararg{SizedBatch})
     fs = first(xs).sizes
     all(x.sizes == fs for x in xs) || error("SizedBatch size mismatch")
-    fs
+    return fs
+end
+function _zeropreserving(f)
+    # ideally would do this at compile time
+    return method_exists(f, (Float64,)) ? f(0.0) == 0.0 : false
 end
 function Base.broadcast(f, xs::Vararg{Union{T, AbstractArray}}) where T<:SizedBatch
     sizes = _checksizes((x for x in xs if x isa T)...)
-    T(broadcast(f, (x isa T ? x.data : x for x in xs)...), sizes)
-    # TODO BUG re-zero padding unless f is known zero-preserving
+    ret = T(broadcast(f, (x isa T ? x.data : x for x in xs)...), sizes)
+    _zeropreserving(f) || _rezero!(ret)
+    return ret
 end
 Base.:+(xs::Vararg{Union{T, AbstractArray}}) where T<:SizedBatch = broadcast(+, xs...)
 Base.:-(xs::Vararg{Union{T, AbstractArray}}) where T<:SizedBatch = broadcast(-, xs...)
@@ -100,31 +133,31 @@ Base.:-(xs::Vararg{Union{T, AbstractArray}}) where T<:SizedBatch = broadcast(-, 
 function Base.dot(a::SizedBatch{T, A}, b::SizedBatch{T, B}) where {T<:AbstractVector, A, B}
     batchsize = last(size(_checksizes(a, b)))
     data = sum(a.data .* b.data, 1)[1, :] # TODO dotBatched?
-    SizedBatch{T, ()}(data, Matrix{Int}(0, batchsize))
+    return SizedBatch{T, ()}(data, Matrix{Int}(0, batchsize))
 end
 function Base.dot(a::AbstractVector, b::SizedBatch{T, (false,)}) where {T}
-    SizedBatch{T, ()}(b.data'*a, Matrix{Int}(0, length(b)))
+    return SizedBatch{T, ()}(b.data'*a, Matrix{Int}(0, length(b)))
 end
 function Base.dot(a::SizedBatch{T, (false,)}, b::AbstractVector) where {T}
-    SizedBatch{T, ()}(a.data'*b, Matrix{Int}(0, length(a)))
+    return SizedBatch{T, ()}(a.data'*b, Matrix{Int}(0, length(a)))
 end
 
 function Base.:*(a::AbstractMatrix, b::SizedBatch{T, (false,)}) where {T}
     s1, bs = size(b.data)
     data = reshape(a * reshape(b.data, s1*bs), size(a, 1), bs)
     sizes = fill(similar(b.sizes), size(a, 1))
-    SizedBatch{T, (false,)}(data, sizes)
+    return SizedBatch{T, (false,)}(data, sizes)
 end
 function Base.:*(a::SizedBatch{T, A}, b::AbstractVector) where {T<:AbstractMatrix, A}
     A[2] == false || error("cannot contract axes with static and dynamic dimension")
     s1, s2, bs = size(a.data)
     data = reshape(reshape(a.data, s1, s2*bs) * b, s1, bs)
-    SizedBatch{T, A}(data, b.sizes[1:1, :])
+    return SizedBatch{T, A}(data, b.sizes[1:1, :])
 end
 
 function Base.:*(a::AbstractMatrix, b::SizedBatch{T, (false,)}) where {T}
     sizes = fill(similar(b.sizes), size(a, 1))
-    SizedBatch{T, (false,)}(a * b.data, sizes)
+    return SizedBatch{T, (false,)}(a * b.data, sizes)
 end
 function Base.:*(a::AbstractMatrix, b::SizedBatch{T, B}) where {T<:AbstractMatrix, B}
     B[1] == false || error("cannot contract axes with static and dynamic dimension")
@@ -132,7 +165,7 @@ function Base.:*(a::AbstractMatrix, b::SizedBatch{T, B}) where {T<:AbstractMatri
     data = reshape(a * reshape(b.data, s1, s2*bs), size(a, 1), s2, bs)
     sizes = deepcopy(b.sizes)
     sizes[1, :] .= size(a, 1)
-    SizedBatch{T, B}(data, sizes)
+    return SizedBatch{T, B}(data, sizes)
 end
 function Base.:*(a::SizedBatch{T, A}, b::AbstractMatrix) where {T<:AbstractMatrix, A}
     A[2] == false || error("cannot contract axes with static and dynamic dimension")
@@ -140,7 +173,7 @@ function Base.:*(a::SizedBatch{T, A}, b::AbstractMatrix) where {T<:AbstractMatri
     data = reshape(reshape(a.data, s1, s2*bs) * b, s1, size(b, 2), bs)
     sizes = deepcopy(b.sizes)
     sizes[2, :] .= size(b, 2)
-    SizedBatch{T, A}(data, sizes)
+    return SizedBatch{T, A}(data, sizes)
 end
 
 # these require gemmBatched/gemm_batched:
