@@ -65,10 +65,12 @@ function VectorBatch(b::SizedBatch{T, A}) where {T, A}
     return VectorBatch{T, A}(xs)
 end
 
-struct MaskedBatch{T, A} <: AbstractBatch{T, A}
+mutable struct MaskedBatch{T, A} <: AbstractBatch{T, A}
     data
     sizes::Matrix{Int}
     mask
+    MaskedBatch{T, A}(data, sizes) where {T, A} = new(data, sizes)
+    MaskedBatch{T, A}(data, sizes, mask) where {T, A} = new(data, sizes, mask)
 end
 function MaskedBatch(b::SizedBatch{T, A}) where {T, A}
     dims = tuple((a ? size(b.data, d) : 1 for (d, a) in enumerate(A))...,
