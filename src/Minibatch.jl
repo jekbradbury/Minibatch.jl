@@ -139,7 +139,7 @@ function Base.broadcast(f, xs::Vararg{Union{T, AbstractArray}}) where T<:SMBatch
     sizes = _checksizes((x for x in xs if x isa T)...)
     res = T(broadcast(f, (x isa T ? x.data : x for x in xs)...), sizes)
     T<:MaskedBatch && (res.mask = first(xs).mask)
-    (T<:MaskedBatch || _zeropreserving(f)) && _rezero!(res)
+    (T<:MaskedBatch || !_zeropreserving(f)) && _rezero!(res)
     return res
 end
 Base.:+(xs::Vararg{Union{T, AbstractArray}}) where T<:SMBatch = broadcast(+, xs...)
