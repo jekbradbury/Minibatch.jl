@@ -34,6 +34,7 @@ VectorBatch(data::Vector{T}, axes::AxisInfo) where {T} = VectorBatch{T, axes}(da
 
 Base.length(b::VectorBatch) = length(b.data)
 Base.:(==)(a::VectorBatch{T1, A}, b::VectorBatch{T2, A}) where {T1, T2, A} = a.data == b.data
+Base.isapprox(a::VectorBatch{T1, A}, b::VectorBatch{T2, A}) where {T1, T2, A} = a.data ≈ b.data
 
 struct SizedBatch{T, A} <: AbstractBatch{T, A}
     data
@@ -55,6 +56,7 @@ end
 # TODO make batch size a part of the type when we have static dims
 Base.length(b::SizedBatch) = last(size(b.sizes))
 Base.:(==)(a::SizedBatch{T1, A}, b::SizedBatch{T2, A}) where {T1, T2, A} = a.data == b.data && a.sizes == b.sizes
+Base.isapprox(a::SizedBatch{T1, A}, b::SizedBatch{T2, A}) where {T1, T2, A} = a.data ≈ b.data && a.sizes == b.sizes
 
 SizedBatch(b::VectorBatch{T, A}) where {T, A} = SizedBatch(b.data, A)
 function VectorBatch(b::SizedBatch{T, A}) where {T, A}
@@ -84,6 +86,7 @@ VectorBatch(b::MaskedBatch) = VectorBatch(SizedBatch(b))
 
 Base.length(b::MaskedBatch) = last(size(b.sizes))
 Base.:(==)(a::MaskedBatch{T1, A}, b::MaskedBatch{T2, A}) where {T1, T2, A} = a.data == b.data && a.sizes == b.sizes
+Base.isapprox(a::MaskedBatch{T1, A}, b::MaskedBatch{T2, A}) where {T1, T2, A} = a.data ≈ b.data && a.sizes == b.sizes
 
 const SMBatch = Union{SizedBatch, MaskedBatch}
 
