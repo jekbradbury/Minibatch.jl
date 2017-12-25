@@ -26,6 +26,7 @@ end
 
 for fn in (f, g, h)
     @test SizedBatch(fn(x1)) == fn(x2)
+    @test MaskedBatch(fn(x1)) == fn(x3)
 end
 
 # function attention(q, k, v) # q::N×D, k::M×D, v::M×D
