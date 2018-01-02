@@ -26,7 +26,13 @@ ys = [rand(4, 5), rand(2, 5)]
 y1 = VectorBatch(ys, (true, false))
 y2 = MaskedBatch(ys, (true, false))
 
-@test MaskedBatch(y1 * x1) ≈ y2 * x2
+z1 = y1 * x1; z2 = y2 * x2
+@test MaskedBatch(z1) ≈ z2
+@test VectorBatch(z2) ≈ z1
+
+for axis in (1, 2)
+    @test MaskedBatch(softmax(z1, axis)) ≈ softmax(z2, axis)
+end
 
 # function attention(q, k, v) # q::N×D, k::M×D, v::M×D
 #     alpha = q*k' # ::N×M

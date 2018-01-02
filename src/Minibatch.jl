@@ -6,9 +6,11 @@ export VectorBatch, MaskedBatch, softmax
 # NN functions #
 ################
 
+const ϵ = 1e-7
+
 function softmax(x::AbstractArray, axis=1)
     out = exp.(x .- maximum(x, axis))
-    out ./= sum(out, axis)
+    out ./= sum(out, axis) .+ ϵ
     return out
 end
 
@@ -90,6 +92,7 @@ Base.:*(xs::Vararg{Union{T, AbstractArray, Number}}) where T<:VectorBatch = _vbc
 Base.:/(xs::Vararg{Union{T, AbstractArray, Number}}) where T<:VectorBatch = _vbcall(/, T, xs...)
 Base.getindex(x::T, inds...) where T<:VectorBatch = _vbcall(getindex, T, x, inds...)
 Base.broadcast(f, xs::Vararg{Union{T, AbstractArray, Number}}) where T<:VectorBatch = _vbcall(broadcast, T, f, xs...)
+softmax(x::T, axis=1) where T<:VectorBatch = T([softmax(x.data[i], axis) for i in 1:length(x)])
 
 # _vbcall is unsafe for contractions because it doesn't check that axes
 # which must have static dimension actually do at the type level. We
@@ -204,6 +207,12 @@ function Base.:*(a::MaskedBatch{T, A}, b::MaskedBatch{T, B}) where {T<:AbstractM
     data = batchedmul(a.data, b.data)
     mask = batchedmul(a.mask[:, 1:1, :], b.mask[1:1, :, :])
     return MaskedBatch{T, (A[1], B[2])}(data, mask)
+end
+
+function softmax(x::MaskedBatch{T, A}, axis=1) where {T, A}
+    data = exp.(x.data .- maximum(x.data, axis)) .* x.mask
+    data ./= sum(data, axis) .+ ϵ
+    return MaskedBatch{T, A}(data, x.mask)
 end
 
 end # module
