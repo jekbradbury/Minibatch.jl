@@ -34,14 +34,25 @@ for axis in (1, 2)
     @test MaskedBatch(softmax(z1, axis)) ≈ softmax(z2, axis)
 end
 
-# function attention(q, k, v) # q::N×D, k::M×D, v::M×D
-#     alpha = q*k' # ::N×M
-#     # TODO tri mask
-#     softmax(alpha, 2)*v # ::N×D
-# end
-
 function attention(q, k, v) # q::D×N, k::D×M, v::D×M
     alpha = k'*q # ::M×N
     # TODO tri mask
     return v*softmax(alpha, 1) # ::D×N
 end
+
+d_qk = 3
+d_v = 4
+enc = [rand(d_v, 6), rand(d_v, 5)]
+dec = [rand(d_v, 3), rand(d_v, 7)]
+enc1 = VectorBatch(enc, (false, true))
+enc2 = MaskedBatch(enc, (false, true))
+dec1 = VectorBatch(dec, (false, true))
+dec2 = MaskedBatch(dec, (false, true))
+
+Wq = rand(d_qk, d_v)
+Wk = rand(d_qk, d_v)
+Wv = rand(d_v, d_v)
+
+out1 = attention(Wq*dec1, Wk*enc1, Wv*enc1)
+out2 = attention(Wq*dec2, Wk*enc2, Wv*enc2)
+@test MaskedBatch(out1) ≈ out2

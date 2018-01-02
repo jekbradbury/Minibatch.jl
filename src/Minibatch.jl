@@ -92,7 +92,11 @@ Base.:*(xs::Vararg{Union{T, AbstractArray, Number}}) where T<:VectorBatch = _vbc
 Base.:/(xs::Vararg{Union{T, AbstractArray, Number}}) where T<:VectorBatch = _vbcall(/, T, xs...)
 Base.getindex(x::T, inds...) where T<:VectorBatch = _vbcall(getindex, T, x, inds...)
 Base.broadcast(f, xs::Vararg{Union{T, AbstractArray, Number}}) where T<:VectorBatch = _vbcall(broadcast, T, f, xs...)
-softmax(x::T, axis=1) where T<:VectorBatch = T([softmax(x.data[i], axis) for i in 1:length(x)])
+function Base.transpose(b::VectorBatch{T, A}) where {T, A}
+    axes = tuple(A[2], A[1], A[3:end]...)
+    return VectorBatch{T, axes}([transpose(x) for x in b.data])
+end
+softmax(x::T, axis=1) where T<:VectorBatch = _vbcall(softmax, T, x, axis)
 
 # _vbcall is unsafe for contractions because it doesn't check that axes
 # which must have static dimension actually do at the type level. We
@@ -209,10 +213,19 @@ function Base.:*(a::MaskedBatch{T, A}, b::MaskedBatch{T, B}) where {T<:AbstractM
     return MaskedBatch{T, (A[1], B[2])}(data, mask)
 end
 
-function softmax(x::MaskedBatch{T, A}, axis=1) where {T, A}
+function softmax(x::T, axis=1) where T<:MaskedBatch
     data = exp.(x.data .- maximum(x.data, axis)) .* x.mask
     data ./= sum(data, axis) .+ ϵ
-    return MaskedBatch{T, A}(data, x.mask)
+    return T(data, x.mask)
+end
+
+function Base.transpose(x::MaskedBatch{T, A}) where {T, A}
+    dims = collect(1:ndims(x.data))
+    dims[1:2] = [2, 1]
+    data = permutedims(x.data, dims)
+    mask = permutedims(x.mask, dims)
+    axes = tuple(A[2], A[1], A[3:end]...)
+    return MaskedBatch{T, axes}(data, mask)
 end
 
 end # module
