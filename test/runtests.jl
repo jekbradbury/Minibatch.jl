@@ -11,23 +11,22 @@ f(x) = tanh.(x)
 g(x) = tanh.(x .+ b)
 h(x) = tanh.(W*x .+ b)
 
-axisinfo = (false, true)
-data(n) = rand(5, n)
-xs = [data(3), data(4)]
-x1 = VectorBatch(xs, axisinfo)
-x2 = SizedBatch(xs, axisinfo)
-x3 = MaskedBatch(xs, axisinfo)
+xs = [rand(5, 3), rand(5, 4)]
+x1 = VectorBatch(xs, (false, true))
+x2 = MaskedBatch(xs, (false, true))
 
-for other in (x1, x2, x3)
-    @test x1 == VectorBatch(other)
-    @test x2 == SizedBatch(other)
-    @test x3 == MaskedBatch(other)
-end
+@test x1 == VectorBatch(x2)
+@test x2 == MaskedBatch(x1)
 
 for fn in (f, g, h)
-    @test SizedBatch(fn(x1)) ≈ fn(x2)
-    @test MaskedBatch(fn(x1)) ≈ fn(x3)
+    @test MaskedBatch(fn(x1)) ≈ fn(x2)
 end
+
+ys = [rand(4, 5), rand(2, 5)]
+y1 = VectorBatch(ys, (true, false))
+y2 = MaskedBatch(ys, (true, false))
+
+@test MaskedBatch(y1 * x1) ≈ y2 * x2
 
 # function attention(q, k, v) # q::N×D, k::M×D, v::M×D
 #     alpha = q*k' # ::N×M
