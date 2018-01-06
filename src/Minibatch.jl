@@ -39,7 +39,7 @@ Base.length(b::VectorBatch) = length(b.data)
 Base.:(==)(a::VectorBatch{T1, A}, b::VectorBatch{T2, A}) where {T1, T2, A} = a.data == b.data
 Base.isapprox(a::VectorBatch{T1, A}, b::VectorBatch{T2, A}) where {T1, T2, A} = a.data ≈ b.data
 
-mutable struct MaskedBatch{T, A} <: AbstractBatch{T, A}
+struct MaskedBatch{T, A} <: AbstractBatch{T, A}
     data
     mask
 end
