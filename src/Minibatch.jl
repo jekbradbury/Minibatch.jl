@@ -175,7 +175,7 @@ end
 # TODO should things work when dynamic dimension = 0?
 function Base.dot(a::MaskedBatch{T, A}, b::MaskedBatch{T, B}) where {T<:AbstractVector, A, B}
     data = sum(a.data .* b.data, 1)[1, :] # TODO replace with batchedmul when fast
-    return MaskedBatch{T, ()}(data, a.mask[1])
+    return MaskedBatch{T, ()}(data, a.mask[:, 1])
 end
 
 # the methods below use batched matrix-matrix and matrix-vector products;
