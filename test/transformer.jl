@@ -22,13 +22,36 @@ type Vocab
     itos::Vector
     stoi::Associative
 end
+Base.length(vocab::Vocab) = length(vocab.itos)
 
-function Vocab(corpus, vocabsize=200)
-    corpus .= tokenize.(split(corpus, '\n'))
+function process(corpus, vocabsize=200, batchsize=4)
+    corpus = tokenize.(split(corpus, '\n'))
     segments = buildvocab(counter(Iterators.flatten(corpus)), vocabsize)
-    corpus .= segment.(corpus, segments)
-    return Vocab(collect(keys(segments)), Dict(enumerate(keys(segments))))
+    corpus = segment.(corpus, segments)
+    itos = keys(segments)
+    stoi = Dict((reverse(p) for p in enumerate(itos)))
+    vocab = Vocab(collect(itos), stoi)
+    corpus = [[vocab.stoi[x] for x in ex] for ex in corpus]
+    corpus = Iterators.partition(corpus, batchsize)
+    corpus = map(b -> MaskedBatch(b, (true,)), corpus)
+    return corpus, vocab
 end
 
-corpus = zip(english, spanish)
-buildvocab()
+type Embedding
+    W
+    Embedding(vocabsize, embedsize) = new(randn(embedsize, vocabsize))
+end
+(embedding::Embedding)(x) = embedding.W[:, x]
+
+#corpus = zip(english, spanish)
+en, vocab_en = process(english)
+es, vocab_es = process(spanish)
+
+model = Embedding(length(vocab_en), 2)
+
+println("----")
+for (src, trg) in zip(en, es)
+    display(src)
+    src = model(src)
+    display(src)
+end

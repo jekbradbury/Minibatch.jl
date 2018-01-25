@@ -43,7 +43,7 @@ struct MaskedBatch{T, A} <: AbstractBatch{T, A}
     data
     mask
 end
-function MaskedBatch(data::Vector, axes::AxisInfo)
+function MaskedBatch(data::AbstractVector, axes::AxisInfo)
     dims = (a ? maximum(size(v, d) for v in data) : size(first(data), d) for (d, a) in enumerate(axes))
     maskdims = (a ? maximum(size(v, d) for v in data) : 1 for (d, a) in enumerate(axes))
     batch = fill!(similar(first(data), dims..., length(data)), 0)
@@ -226,6 +226,15 @@ function Base.transpose(x::MaskedBatch{T, A}) where {T, A}
     mask = permutedims(x.mask, dims)
     axes = tuple(A[2], A[1], A[3:end]...)
     return MaskedBatch{T, axes}(data, mask)
+end
+
+# generalize this
+function Base.getindex(a::AbstractMatrix, ::Colon, b::MaskedBatch{T, B}) where {T<:AbstractVector, B}
+    data = b.data .+ (1 .- b.mask)
+    data = a[:, data]
+    mask = reshape(b.mask, 1, size(b.mask)...)
+    axes = tuple(false, B...)
+    return MaskedBatch{T, axes}(data .* mask, mask)
 end
 
 end # module
