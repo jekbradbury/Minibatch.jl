@@ -1,6 +1,8 @@
 using Minibatch
 using Revtok
 using DataStructures
+using GPUArrays
+using NNlib
 
 english = """This is an account of how magical thinking made us modern.
 When people talk about magical thinking, it is usually as a cognitive feature of children, uneducated people, the mushy-minded, or the mentally ill.
@@ -43,15 +45,83 @@ type Embedding
 end
 (embedding::Embedding)(x) = embedding.W[:, x]
 
+function posenc(timestep::Integer, channel::Integer, nchannels::Integer)
+    if iseven(channel)
+        return sin(timestep/(10000^(channel/nchannels)))
+    else
+        return cos(timestep/(10000^((channel-1)/nchannels)))
+    end
+end
+
+function posenc(idx::CartesianIndex, nchannels::Integer)
+    return posenc(idx[2], idx[1], nchannels)
+end
+
+function posenc!(A::GPUArray, state, nchannels::Integer)
+    idx = @cartesianidx A state
+    @inbounds A[idx] += posenc(idx, nchannels)
+end
+
+function posenc!(A::GPUArray)
+    nchannels = size(A, 1)
+    gpucall(posenc, A, (nchannels,))
+end
+
+function posenc!(A::AbstractArray)
+    nchannels = size(A, 1)
+    for idx in CartesianRange(size(A))
+        @inbounds A[idx] += posenc(idx, nchannels)
+    end
+end
+
+function posenc!(B::MaskedBatch)
+    posenc!(B.data)
+    B.data .*= B.mask
+end
+
+type LayerNorm
+    γ
+    β
+    LayerNorm(nchannels) = new(ones(nchannels), zeros(nchannels))
+end
+(l::LayerNorm)(x) = l.γ .* (x .- mean(x, 1)) ./ (std(x, 1) .+ ϵ) .+ l.β
+
+type Linear
+    W
+    b
+    Linear(nin, nout) = new(randn(nout, nin), zeros(nout))
+end
+(l::Linear)(x) = l.W * x .+ l.b
+
+type FeedForward
+    l1
+    l2
+    FeedForward(d_model, d_hidden) = new(Linear(d_model, d_hidden), Linear(d_hidden, d_model))
+end
+(l::FeedForward)(x) = l.l2(relu.(l.l1(x)))
+
 #corpus = zip(english, spanish)
 en, vocab_en = process(english)
 es, vocab_es = process(spanish)
 
-model = Embedding(length(vocab_en), 2)
+d_embed = 4
+embed = Embedding(length(vocab_en), d_embed)
+layernorm = LayerNorm(d_embed)
+linear = Linear(d_embed, d_embed)
+feedforward = FeedForward(d_embed, 2 * d_embed)
 
-println("----")
-for (src, trg) in zip(en, es)
-    display(src)
-    src = model(src)
-    display(src)
-end
+# println("----")
+# for (src, trg) in zip(en, es)
+#     display(src)
+#     src = embed(src)
+#     display(src)
+#     posenc!(src)
+#     display(src)
+# end
+
+x = en[1]
+x = embed(x)
+posenc!(x); x
+x = layernorm(x)
+x = linear(x)
+x = feedforward(x)
