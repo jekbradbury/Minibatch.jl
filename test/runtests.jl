@@ -1,4 +1,5 @@
 using Minibatch
+using NNlib
 using Base.Test
 
 #################
