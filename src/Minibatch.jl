@@ -1,6 +1,8 @@
 module Minibatch
 
-export VectorBatch, MaskedBatch, softmax
+export VectorBatch, MaskedBatch, ϵ
+
+using NNlib
 
 ################
 # NN functions #
@@ -8,7 +10,7 @@ export VectorBatch, MaskedBatch, softmax
 
 const ϵ = 1e-7
 
-function softmax(x::AbstractArray, axis=1)
+function NNlib.softmax(x::AbstractArray, axis=1)
     out = exp.(x .- maximum(x, axis))
     out ./= sum(out, axis) .+ ϵ
     return out
@@ -128,14 +130,14 @@ function _samemasks(xs::Vararg{<:MaskedBatch{T2, B}}) where {T2, B}
     end
     return fs
 end
-function Base.broadcast(f, xs::Vararg{Union{T, AbstractArray}}) where T<:MaskedBatch
+function Base.broadcast(f, xs::Vararg{Union{T, AbstractArray, Number}}) where T<:MaskedBatch
     mask = _samemasks((x for x in xs if x isa T)...)
     res = T(broadcast(f, (x isa T ? x.data : x for x in xs)...), mask)
     _rezero!(res)
     return res
 end
-Base.:+(xs::Vararg{Union{T, AbstractArray}}) where T<:MaskedBatch = broadcast(+, xs...)
-Base.:-(xs::Vararg{Union{T, AbstractArray}}) where T<:MaskedBatch = broadcast(-, xs...)
+Base.:+(xs::Vararg{Union{T, AbstractArray, Number}}) where T<:MaskedBatch = broadcast(+, xs...)
+Base.:-(xs::Vararg{Union{T, AbstractArray, Number}}) where T<:MaskedBatch = broadcast(-, xs...)
 
 # contractions between axes with static dimension
 
@@ -234,7 +236,18 @@ function Base.getindex(a::AbstractMatrix, ::Colon, b::MaskedBatch{T, B}) where {
     data = a[:, data]
     mask = reshape(b.mask, 1, size(b.mask)...)
     axes = tuple(false, B...)
-    return MaskedBatch{T, axes}(data .* mask, mask)
+    # TODO it's a nice coincidence that this typeof works here; it won't in other methods
+    return MaskedBatch{typeof(a), axes}(data .* mask, mask)
 end
+
+function Base.mapslices(f, x::MaskedBatch{T, A}, dim::Int) where {T, A}
+    A[dim] && error("reduction along dynamic dimension not implemented")
+    return MaskedBatch{T, A}(mapslices(f, x.data, dim) .* x.mask, x.mask)
+end
+
+Base.mean(x::MaskedBatch, dim::Int) = mapslices(mean, x, dim)
+Base.std(x::MaskedBatch, dim::Int) = mapslices(std, x, dim)
+Base.sum(x::MaskedBatch, dim::Int) = mapslices(sum, x, dim)
+Base.prod(x::MaskedBatch, dim::Int) = mapslices(prod, x, dim)
 
 end # module
