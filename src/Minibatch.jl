@@ -3,6 +3,7 @@ module Minibatch
 export VectorBatch, MaskedBatch, ϵ
 
 using NNlib
+using Flux
 
 ################
 # NN functions #
@@ -41,7 +42,8 @@ Base.length(b::VectorBatch) = length(b.data)
 Base.:(==)(a::VectorBatch{T1, A}, b::VectorBatch{T2, A}) where {T1, T2, A} = a.data == b.data
 Base.isapprox(a::VectorBatch{T1, A}, b::VectorBatch{T2, A}) where {T1, T2, A} = a.data ≈ b.data
 
-struct MaskedBatch{T, A} <: AbstractBatch{T, A}
+# TODO unsure if it should be mutable
+mutable struct MaskedBatch{T, A} <: AbstractBatch{T, A}
     data
     mask
 end
@@ -215,7 +217,7 @@ function Base.:*(a::MaskedBatch{T, A}, b::MaskedBatch{T, B}) where {T<:AbstractM
     return MaskedBatch{T, (A[1], B[2])}(data, mask)
 end
 
-function softmax(x::T, axis=1) where T<:MaskedBatch
+function NNlib.softmax(x::T, axis=1) where T<:MaskedBatch
     data = exp.(x.data .- maximum(x.data, axis)) .* x.mask
     data ./= sum(data, axis) .+ ϵ
     return T(data, x.mask)
@@ -249,5 +251,11 @@ Base.mean(x::MaskedBatch, dim::Int) = mapslices(mean, x, dim)
 Base.std(x::MaskedBatch, dim::Int) = mapslices(std, x, dim)
 Base.sum(x::MaskedBatch, dim::Int) = mapslices(sum, x, dim)
 Base.prod(x::MaskedBatch, dim::Int) = mapslices(prod, x, dim)
+
+function Flux.normalise(x::MaskedBatch{<:AbstractVecOrMat})
+  μ′ = mean(x, 1)
+  σ′ = std(x, 1)
+  return (x .- μ′) ./ (σ′ .+ ϵ)
+end
 
 end # module
